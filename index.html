@@ -421,9 +421,24 @@
             padding: 40px !important;
             font-style: italic;
         }
+        
+        #loading-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.3);
+            z-index: 9999;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            font-size: 18px;
+            font-weight: bold;
+        }
     </style>
 </head>
 <body>
+
+<div id="loading-overlay">Sinusave sa Google Sheet... Sandali lang...</div>
 
 <div class="container">
     <header>
@@ -625,7 +640,9 @@
 </div>
 
 <script>
-    // Standard allocations per personnel with new additions
+    // Iyong Google Apps Script Web App URL
+    const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxXG8QZT6CItk8GkMzeG26ujtHzRgTWA4pQCmKx-o1b8OHcMNvGrS9-d5sf4lhRRxEGHQ/exec';
+
     const leaveAllocationsTemplate = [
         { type: 'Vacation Leave (VL)', allocated: 15 },
         { type: 'Sick Leave (SL)', allocated: 15 },
@@ -640,24 +657,7 @@
         { type: 'Study Leave', allocated: 60 }
     ];
 
-    // Initial sample dataset
-    const defaultData = [
-        {
-            id: 1,
-            rank: 'JO1',
-            badgeNo: '2027-001',
-            name: 'Rogelio D Dela Cruz',
-            leaveType: 'Vacation Leave (VL)',
-            startDate: '2027-01-20',
-            endDate: '2027-01-22',
-            totalDays: 3,
-            remarks: 'Family Outing',
-            dateLogged: '2027-01-15',
-            soNumber: '2027-01-001'
-        }
-    ];
-
-    let leaveRecords = JSON.parse(localStorage.getItem('bjmp_leave_logs')) || defaultData;
+    let leaveRecords = [];
 
     // DOM Elements
     const form = document.getElementById('leave-form');
@@ -677,6 +677,26 @@
     const otherNameGroup = document.getElementById('other-name-group');
     const otherNameInput = document.getElementById('other-name-input');
     const badgeNoInput = document.getElementById('badge-no');
+    const loadingOverlay = document.getElementById('loading-overlay');
+
+    // Fetch data galing sa Google Sheet pag-load ng page
+    async function fetchRecordsFromSheet() {
+        loadingOverlay.style.display = 'flex';
+        loadingOverlay.textContent = 'Kinukuha ang data mula sa Google Sheet...';
+        try {
+            const response = await fetch(SCRIPT_URL);
+            const result = await response.json();
+            if (Array.isArray(result)) {
+                leaveRecords = result;
+            }
+        } catch (error) {
+            console.error('Error fetching data:', error);
+            alert('Hindi nakuha ang data mula sa Google Sheet.');
+        } finally {
+            loadingOverlay.style.display = 'none';
+            render();
+        }
+    }
 
     // Toggle Other Name input field
     nameSelect.addEventListener('change', function() {
@@ -711,41 +731,36 @@
     startDateInput.addEventListener('change', updateDaysPreview);
     endDateInput.addEventListener('change', updateDaysPreview);
 
-    function saveData() {
-        localStorage.setItem('bjmp_leave_logs', JSON.stringify(leaveRecords));
-    }
-
-    // Helper to get currently used days ONLY FOR APPROVED transactions
     function getPersonnelUsedDays(identifier, leaveTypeStr) {
         const query = identifier.toLowerCase();
         return leaveRecords
             .filter(r => {
-                const matchesNameOrBadge = r.name.toLowerCase().includes(query) || (r.badgeNo && r.badgeNo.toLowerCase().includes(query));
-                const matchesType = r.leaveType.toLowerCase() === leaveTypeStr.toLowerCase();
-                const isApproved = r.soNumber && r.soNumber.trim() !== ""; // Only count if approved with S.O. Number
+                const matchesNameOrBadge = (r.name && r.name.toLowerCase().includes(query)) || (r.badgeNo && r.badgeNo.toLowerCase().includes(query));
+                const matchesType = r.leaveType && r.leaveType.toLowerCase() === leaveTypeStr.toLowerCase();
+                const isApproved = r.soNumber && r.soNumber.toString().trim() !== "";
                 return matchesNameOrBadge && matchesType && isApproved;
             })
-            .reduce((acc, curr) => acc + Number(curr.totalDays), 0);
+            .reduce((acc, curr) => acc + Number(curr.totalDays || 0), 0);
     }
 
-    // Handle form submission with Limit Check per personnel
-    form.addEventListener('submit', function(e) {
+    // [HAKBANG 3 INTEGRATION] Form Submit Event Listener
+    form.addEventListener('submit', async function(e) {
         e.preventDefault();
         
-        const rank = document.getElementById('rank').value;
-        const badgeNo = badgeNoInput.value.trim();
-        let name = nameSelect.value;
-        if (name === 'OTHER') {
-            name = otherNameInput.value.trim();
+        const rankValue = document.getElementById('rank').value;
+        const badgeNoValue = badgeNoInput.value.trim();
+        let nameValue = nameSelect.value;
+        if (nameValue === 'OTHER') {
+            nameValue = otherNameInput.value.trim();
         }
 
-        const leaveType = document.getElementById('leave-type').value;
-        const startDate = startDateInput.value;
-        const endDate = endDateInput.value;
-        const remarks = document.getElementById('remarks').value.trim() || '-';
+        const typeValue = document.getElementById('leave-type').value;
+        const startDateValue = startDateInput.value;
+        const endDateValue = endDateInput.value;
+        const remarksValue = document.getElementById('remarks').value.trim() || '-';
         
-        const start = new Date(startDate);
-        const end = new Date(endDate);
+        const start = new Date(startDateValue);
+        const end = new Date(endDateValue);
         
         if (end < start) {
             alert("Error: End date cannot be earlier than start date!");
@@ -755,15 +770,14 @@
         const diffTime = Math.abs(end - start);
         const totalDaysRequested = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
 
-        // Check Allocation Limit based on approved used days
-        const allocationItem = leaveAllocationsTemplate.find(item => item.type.toLowerCase() === leaveType.toLowerCase());
+        const allocationItem = leaveAllocationsTemplate.find(item => item.type.toLowerCase() === typeValue.toLowerCase());
         
         if (allocationItem && allocationItem.allocated > 0) {
-            const currentUsed = getPersonnelUsedDays(name, leaveType);
+            const currentUsed = getPersonnelUsedDays(nameValue, typeValue);
             const availableDays = allocationItem.allocated - currentUsed;
 
             if (totalDaysRequested > availableDays) {
-                alert(`Maximum limit reach!\n\n${name} has requested ${totalDaysRequested} day(s) for ${leaveType}, but only has ${availableDays} available approved day(s) left out of the ${allocationItem.allocated} allocated limit.`);
+                alert(`Maximum limit reach!\n\n${nameValue} has requested ${totalDaysRequested} day(s) for ${typeValue}, but only has ${availableDays} available approved day(s) left out of the ${allocationItem.allocated} allocated limit.`);
                 return;
             }
         }
@@ -772,30 +786,47 @@
 
         const newRecord = {
             id: Date.now(),
-            rank,
-            badgeNo,
-            name,
-            leaveType,
-            startDate,
-            endDate,
+            rank: rankValue,
+            badgeNo: badgeNoValue,
+            name: nameValue,
+            leaveType: typeValue,
+            startDate: startDateValue,
+            endDate: endDateValue,
             totalDays: totalDaysRequested,
-            remarks,
+            remarks: remarksValue,
             dateLogged: today,
             soNumber: ''
         };
 
-        leaveRecords.unshift(newRecord);
-        saveData();
-        form.reset();
-        otherNameGroup.style.display = 'none';
-        daysPreview.textContent = '';
-        render();
+        loadingOverlay.style.display = 'flex';
+        loadingOverlay.textContent = 'Sine-save ang record sa Google Sheet...';
+
+        try {
+            // Pagpapadala ng data online papuntang Google Sheet gamit ang fetch POST request
+            await fetch(SCRIPT_URL, {
+                method: 'POST',
+                mode: 'no-cors',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'add', data: newRecord })
+            });
+
+            leaveRecords.unshift(newRecord);
+            form.reset();
+            otherNameGroup.style.display = 'none';
+            daysPreview.textContent = '';
+            render();
+            alert('Tagumpay na nai-save ang record sa Google Sheet!');
+        } catch (error) {
+            console.error('Error saving data:', error);
+            alert('Nagka-problema sa pag-save sa Google Sheet.');
+        } finally {
+            loadingOverlay.style.display = 'none';
+        }
     });
 
-    // Approve / Disapprove Actions
-    window.handleAction = function(id, actionType) {
+    window.handleAction = async function(id, actionType) {
         if (actionType === 'approve') {
-            const defaultSoDate = new Date().toISOString().slice(0, 7); // YYYY-MM
+            const defaultSoDate = new Date().toISOString().slice(0, 7);
             const userSoInput = prompt("Please input Special Order Number (format: YYYY-MM-111):", `${defaultSoDate}-001`);
             
             if (userSoInput !== null) {
@@ -804,54 +835,68 @@
                     alert("Special Order Number is required to approve.");
                     return;
                 }
-                const record = leaveRecords.find(rec => rec.id === id);
+                const record = leaveRecords.find(rec => rec.id == id);
                 if (record) {
                     record.soNumber = trimmedSo;
-                    saveData();
-                    render();
+                    await updateRecordInSheet(record, 'update');
                 }
             }
         } else if (actionType === 'disapprove') {
             if (confirm("Leave disapproved. This transaction will be automatically deleted. Proceed?")) {
-                leaveRecords = leaveRecords.filter(rec => rec.id !== id);
-                saveData();
-                render();
+                await updateRecordInSheet({ id }, 'delete');
             }
         }
     }
 
-    // Delete Approved Record with Authorization Check
-    window.deleteApprovedRecord = function(id) {
+    window.deleteApprovedRecord = async function(id) {
         const authCode = prompt("Please enter Authorization Code");
         
         if (authCode === null) {
-            return; // User canceled
+            return;
         }
 
         if (authCode.trim() === "240833") {
-            leaveRecords = leaveRecords.filter(rec => rec.id !== id);
-            saveData();
+            await updateRecordInSheet({ id }, 'delete');
             alert("The Transaction is successfully deleted");
-            render();
         } else {
             alert("Sorry Wrong Authorization Code");
         }
     }
 
+    async function updateRecordInSheet(recordData, actionType) {
+        loadingOverlay.style.display = 'flex';
+        loadingOverlay.textContent = 'Ina-update ang Google Sheet...';
+
+        try {
+            await fetch(SCRIPT_URL, {
+                method: 'POST',
+                mode: 'no-cors',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: actionType, data: recordData })
+            });
+
+            await fetchRecordsFromSheet();
+        } catch (error) {
+            console.error('Error updating sheet:', error);
+            alert('Nagka-problema sa pag-update ng Google Sheet.');
+            loadingOverlay.style.display = 'none';
+        }
+    }
+
     function getLeaveBadge(type) {
+        if (!type) return 'badge-other';
         if (type.includes('Vacation')) return 'badge-vl';
         if (type.includes('Sick')) return 'badge-sl';
         return 'badge-other';
     }
 
-    // Render Allocation Table Summary for a Searched Personnel / Badge No.
     function renderAllocationSummary(searchQuery) {
         if (!searchQuery) {
             allocationSection.style.display = 'none';
             return;
         }
 
-        const matchedRecord = leaveRecords.find(r => r.name.toLowerCase().includes(searchQuery) || (r.badgeNo && r.badgeNo.toLowerCase().includes(searchQuery)));
+        const matchedRecord = leaveRecords.find(r => (r.name && r.name.toLowerCase().includes(searchQuery)) || (r.badgeNo && r.badgeNo.toLowerCase().includes(searchQuery)));
         const targetIdentifier = matchedRecord ? matchedRecord.name : searchQuery;
 
         allocationSection.style.display = 'block';
@@ -893,21 +938,19 @@
         allocationTableBody.appendChild(footerRow);
     }
 
-    // Get Filtered Records helper for table & CSV export
     function getFilteredRecords() {
         const searchTerm = searchName.value.toLowerCase().trim();
         const selectedRank = filterRank.value;
         const selectedType = filterType.value;
 
         return leaveRecords.filter(rec => {
-            const matchesName = rec.name.toLowerCase().includes(searchTerm) || (rec.badgeNo && rec.badgeNo.toLowerCase().includes(searchTerm));
+            const matchesName = (rec.name && rec.name.toLowerCase().includes(searchTerm)) || (rec.badgeNo && rec.badgeNo.toLowerCase().includes(searchTerm));
             const matchesRank = selectedRank === "" || rec.rank === selectedRank;
-            const matchesType = selectedType === "" || rec.leaveType.toLowerCase().includes(selectedType.toLowerCase());
+            const matchesType = selectedType === "" || (rec.leaveType && rec.leaveType.toLowerCase().includes(selectedType.toLowerCase()));
             return matchesName && matchesRank && matchesType;
         });
     }
 
-    // Render Table & Dashboard
     function render() {
         const filtered = getFilteredRecords();
 
@@ -916,45 +959,42 @@
             tableBody.innerHTML = `<tr><td colspan="10" class="empty-row">No personnel leave records found.</td></tr>`;
         } else {
             filtered.forEach(rec => {
-                const isApproved = rec.soNumber && rec.soNumber.trim() !== "";
+                const isApproved = rec.soNumber && rec.soNumber.toString().trim() !== "";
                 const actionContent = isApproved 
                     ? `<div class="action-btns">
                          <span class="badge-so">S.O. No: ${rec.soNumber}</span>
-                         <button class="btn-icon-danger" title="Delete Approved Transaction" onclick="deleteApprovedRecord(${rec.id})">🗑️</button>
+                         <button class="btn-icon-danger" title="Delete Approved Transaction" onclick="deleteApprovedRecord('${rec.id}')">🗑️</button>
                        </div>`
                     : `<div class="action-btns">
-                         <button class="btn-success" onclick="handleAction(${rec.id}, 'approve')">Approve</button>
-                         <button class="btn-danger" onclick="handleAction(${rec.id}, 'disapprove')">Disapprove</button>
+                         <button class="btn-success" onclick="handleAction('${rec.id}', 'approve')">Approve</button>
+                         <button class="btn-danger" onclick="handleAction('${rec.id}', 'disapprove')">Disapprove</button>
                        </div>`;
 
                 const row = document.createElement('tr');
                 row.innerHTML = `
-                    <td><span class="badge badge-rank">${rec.rank}</span></td>
+                    <td><span class="badge badge-rank">${rec.rank || ''}</span></td>
                     <td><strong>${rec.badgeNo || '-'}</strong></td>
-                    <td><strong>${rec.name}</strong></td>
-                    <td><span class="badge ${getLeaveBadge(rec.leaveType)}">${rec.leaveType}</span></td>
-                    <td>${rec.startDate}</td>
-                    <td>${rec.endDate}</td>
-                    <td><strong>${rec.totalDays}</strong></td>
-                    <td>${rec.remarks}</td>
-                    <td>${rec.dateLogged}</td>
+                    <td><strong>${rec.name || ''}</strong></td>
+                    <td><span class="badge ${getLeaveBadge(rec.leaveType)}">${rec.leaveType || ''}</span></td>
+                    <td>${rec.startDate || ''}</td>
+                    <td>${rec.endDate || ''}</td>
+                    <td><strong>${rec.totalDays || 0}</strong></td>
+                    <td>${rec.remarks || ''}</td>
+                    <td>${rec.dateLogged || ''}</td>
                     <td>${actionContent}</td>
                 `;
                 tableBody.appendChild(row);
             });
         }
 
-        // Update Dashboard Stats
         document.getElementById('stat-total-logs').textContent = leaveRecords.length;
-        document.getElementById('stat-total-days').textContent = leaveRecords.reduce((acc, curr) => acc + Number(curr.totalDays), 0);
-        document.getElementById('stat-vl').textContent = leaveRecords.filter(r => r.leaveType.toLowerCase().includes('vacation')).length;
-        document.getElementById('stat-sl').textContent = leaveRecords.filter(r => r.leaveType.toLowerCase().includes('sick')).length;
+        document.getElementById('stat-total-days').textContent = leaveRecords.reduce((acc, curr) => acc + Number(curr.totalDays || 0), 0);
+        document.getElementById('stat-vl').textContent = leaveRecords.filter(r => r.leaveType && r.leaveType.toLowerCase().includes('vacation')).length;
+        document.getElementById('stat-sl').textContent = leaveRecords.filter(r => r.leaveType && r.leaveType.toLowerCase().includes('sick')).length;
 
-        // Conditionally render individual balance summary dashboard if searched
         renderAllocationSummary(searchName.value.toLowerCase().trim());
     }
 
-    // Export Filtered Records to CSV
     exportBtn.addEventListener('click', function() {
         const filtered = getFilteredRecords();
         if (filtered.length === 0) {
@@ -964,9 +1004,9 @@
 
         let csv = "Rank,Badge No.,Personnel Name,Leave Type,Start Date,End Date,Total Days,Remarks / Reason,Date Logged,Special Order No.\n";
         filtered.forEach(rec => {
-            const cleanName = `"${rec.name.replace(/"/g, '""')}"`;
-            const cleanRemarks = `"${rec.remarks.replace(/"/g, '""')}"`;
-            csv += `${rec.rank},"${rec.badgeNo || ''}",${cleanName},"${rec.leaveType}",${rec.startDate},${rec.endDate},${rec.totalDays},${cleanRemarks},${rec.dateLogged},"${rec.soNumber || 'Pending'}"\n`;
+            const cleanName = `"${(rec.name || '').replace(/"/g, '""')}"`;
+            const cleanRemarks = `"${(rec.remarks || '').replace(/"/g, '""')}"`;
+            csv += `${rec.rank || ''},"${rec.badgeNo || ''}",${cleanName},"${rec.leaveType || ''}",${rec.startDate || ''},${rec.endDate || ''},${rec.totalDays || 0},${cleanRemarks},${rec.dateLogged || ''},"${rec.soNumber || 'Pending'}"\n`;
         });
 
         const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
@@ -980,7 +1020,6 @@
         document.body.removeChild(link);
     });
 
-    // Event Listeners for Filters & Search
     searchName.addEventListener('input', render);
     filterRank.addEventListener('change', render);
     filterType.addEventListener('change', render);
@@ -992,8 +1031,8 @@
         render();
     });
 
-    // Initial render on load
-    render();
+    // Auto-load data pagbukas ng page
+    fetchRecordsFromSheet();
 </script>
 
 </body>
